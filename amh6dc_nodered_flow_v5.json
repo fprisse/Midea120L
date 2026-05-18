@@ -1,0 +1,700 @@
+[
+    {
+        "id": "d01c5646a1b659b6",
+        "type": "comment",
+        "z": "e1308859a44f2503",
+        "name": "── SECTIE 1: MONITORING (elke 10 sec) ──────────────────────────────────────────────────────────────",
+        "info": "",
+        "x": 590,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "869c54240e78f285",
+        "type": "inject",
+        "z": "e1308859a44f2503",
+        "name": "Poll elke 10 sec",
+        "repeat": "10",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "1",
+        "topic": "poll",
+        "payload": "",
+        "payloadType": "date",
+        "x": 210,
+        "y": 260,
+        "wires": [
+            [
+                "b7e3438afa5291a1",
+                "158d48929f059054",
+                "a09d21d43f1b436f"
+            ]
+        ]
+    },
+    {
+        "id": "869c382e96222369",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Parse Sensoren (Midea 120L)",
+        "func": "var r = msg.payload;\n// r[0] = reg100, r[1] = reg101, ... r[27] = reg127\n// All temps in °C direct value unless noted.\n// Negative temps: standard signed 16-bit two's complement\nfunction s16(v) { return v > 32767 ? v - 65536 : v; }\n\n// Operating mode decode\nvar modeMap = {0: 'Uit', 2: 'Koelen', 3: 'Verwarmen'};\n\nvar data = {\n    timestamp:        new Date().toISOString(),\n    comp_hz:          r[0],              // Reg 100: Compressor freq Hz\n    bedrijfsmodus:    modeMap[r[1]] || 'Onbekend(' + r[1] + ')',  // Reg 101\n    fan_rpm:          r[2],              // Reg 102: Fan speed r/min\n    exv1_opening:     r[3],              // Reg 103: Expansion valve openness P\n    Tw_in:            s16(r[4]),         // Reg 104: Plate HX water INLET (return) °C\n    Tw_out:           s16(r[5]),         // Reg 105: Plate HX water OUTLET (flow) °C\n    T3_condenser:     s16(r[6]),         // Reg 106: Condenser temp °C\n    T4_buiten:        s16(r[7]),         // Reg 107: Outdoor ambient temp °C\n    Tp_discharge:     s16(r[8]),         // Reg 108: Compressor discharge temp °C\n    Th_suction:       s16(r[9]),         // Reg 109: Compressor suction temp °C\n    T1_uitvoer:       s16(r[10]),        // Reg 110: Total outlet water temp °C\n    Tw2_zone2:        s16(r[11]),        // Reg 111: Zone 2 water temp °C (25=unavailable)\n    T2_ref_liquid:    s16(r[12]),        // Reg 112: Refrigerant liquid side temp °C\n    T2B_ref_gas:      s16(r[13]),        // Reg 113: Refrigerant gas side temp °C\n    Ta_kamer:         s16(r[14]),        // Reg 114: Room temp °C (25=unavailable)\n    T5_tapwater:      s16(r[15]),        // Reg 115: DHW tank temp °C\n    P1_hogedruk_kPa:  r[16],             // Reg 116: High pressure kPa\n    P2_lagedruk_kPa:  r[17],             // Reg 117: Low pressure kPa\n    odu_stroom_A:     r[18],             // Reg 118: ODU current A\n    odu_spanning_V:   r[19],             // Reg 119: ODU voltage V\n    Tbt1_buffer_top:  s16(r[20]),        // Reg 120: Buffer tank TOP temp °C\n    Tbt2_buffer_bot:  s16(r[21]),        // Reg 121: Buffer tank BOTTOM temp °C\n    comp_uren:        r[22],             // Reg 122: Compressor operating time hrs\n    unit_vermogen_kW: r[23],             // Reg 123: Unit capacity kW\n    foutcode:         r[24]              // Reg 124: Current error (0=OK)\n};\n\n// Persist for cross-node access\nflow.set('sensor_data', data);\n\n// Active fault warning\nif (data.foutcode !== 0) {\n    node.warn('ACTIEVE FOUT: code ' + data.foutcode +\n        ' | Aanvoer: ' + data.Tw_out + 'C' +\n        ' | Buiten: ' + data.T4_buiten + 'C');\n}\n\n// Sanity check: Tw2=25 means Zone 2 sensor unavailable (per Midea note)\nif (data.Tw2_zone2 === 25) { data.Tw2_zone2 = null; }\n// Ta=25 means room sensor unavailable\nif (data.Ta_kamer === 25) { data.Ta_kamer = null; }\n\nmsg.payload = data;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 790,
+        "y": 240,
+        "wires": [
+            [
+                "2ebe3a07c9cec6f4",
+                "7391dfb63f9b200b"
+            ]
+        ]
+    },
+    {
+        "id": "ea2b961a69383f8a",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Parse Controls (Reg 0-7)",
+        "func": "var r = msg.payload;\n\n// Register 0 is a BIT field - decode each relevant bit\nvar reg0 = r[0];\nvar modeMap = {1: 'Auto', 2: 'Koelen', 3: 'Verwarmen'};\n\nvar data = {\n    timestamp:        new Date().toISOString(),\n    reg0_raw:         reg0,\n    zone1_aan:        (reg0 & 0x0002) ? 'AAN' : 'UIT',  // BIT1: Zone1 water flow ctrl\n    dhw_aan:          (reg0 & 0x0004) ? 'AAN' : 'UIT',  // BIT2: DHW\n    zone2_aan:        (reg0 & 0x0008) ? 'AAN' : 'UIT',  // BIT3: Zone2 water flow ctrl\n    eco_modus:        (reg0 & 0x0020) ? 'Actief' : 'Uit', // BIT5\n    stille_modus:     (reg0 & 0x0100) ? 'Actief' : 'Uit', // BIT8\n    modus:            modeMap[r[1]] || 'Onbekend(' + r[1] + ')',  // Reg 1\n    setpoint_T1:      r[2],               // Reg 2: Zone 1 water temp setpoint °C\n    setpoint_T1z2:    r[3],               // Reg 3: Zone 2 water temp setpoint °C\n    setpoint_Tas:     r[4],               // Reg 4: Air temp setpoint °C\n    setpoint_T5:      r[5],               // Reg 5: DHW setpoint °C\n    func_setting:     r[6],               // Reg 6: Function setting (BIT field)\n    curve_sel:        r[7]                // Reg 7: Temperature curve selection\n};\n\nflow.set('control_data', data);\nmsg.payload = data;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 790,
+        "y": 300,
+        "wires": [
+            [
+                "d758f660b4c1b3c1",
+                "9c7ea23245e6dd85"
+            ]
+        ]
+    },
+    {
+        "id": "21b787c2d2949fbb",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Parse Energie & COP (Reg 148-155)",
+        "func": "var r = msg.payload;\n// r[0]=reg148, r[1]=reg149, ... r[7]=reg155\n// For R290 units: actual value = register value / 100\n\nvar data = {\n    timestamp:             new Date().toISOString(),\n    verwarm_vermogen_kW:   r[0] / 100,   // Reg 148: Real-time heating capacity kW\n    hernieuw_vermogen_kW:  r[1] / 100,   // Reg 149: Real-time renewable heating kW\n    elek_verbruik_kW:      r[2] / 100,   // Reg 150: Real-time heating power consumption kW\n    COP_actueel:           r[3] / 100,   // Reg 151: Real-time heating COP\n    koel_vermogen_kW:      r[4] / 100,   // Reg 152: Real-time cooling capacity kW\n    koel_hernieuw_kW:      r[5] / 100,   // Reg 153: Real-time renewable cooling kW\n    koel_verbruik_kW:      r[6] / 100,   // Reg 154: Real-time cooling power consumption kW\n    EER_actueel:           r[7] / 100    // Reg 155: Real-time cooling EER\n};\n\n// Alert on unexpectedly low COP\nif (data.COP_actueel > 0 && data.COP_actueel < 1.5) {\n    node.warn('LAGE COP: ' + data.COP_actueel +\n        ' | Vermogen: ' + data.verwarm_vermogen_kW + 'kW' +\n        ' | Verbruik: ' + data.elek_verbruik_kW + 'kW');\n}\n\nflow.set('energy_data', data);\nmsg.payload = data;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 790,
+        "y": 360,
+        "wires": [
+            [
+                "902b0ef15d91c01c",
+                "fbeb4e768f1590a4"
+            ]
+        ]
+    },
+    {
+        "id": "2ebe3a07c9cec6f4",
+        "type": "debug",
+        "z": "e1308859a44f2503",
+        "name": "Sensor Waarden",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "payload.Tw_out",
+        "statusType": "auto",
+        "x": 1030,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "d758f660b4c1b3c1",
+        "type": "debug",
+        "z": "e1308859a44f2503",
+        "name": "Control Status",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "payload.zone1_aan",
+        "statusType": "auto",
+        "x": 1030,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "902b0ef15d91c01c",
+        "type": "debug",
+        "z": "e1308859a44f2503",
+        "name": "Energie & COP",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "payload.COP_actueel",
+        "statusType": "auto",
+        "x": 1030,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "7391dfb63f9b200b",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Formatteer CSV",
+        "func": "var d = msg.payload;\nvar written = flow.get('sensor_hdr') || false;\nvar out = '';\nif (!written) {\n    out = 'timestamp,comp_hz,bedrijfsmodus,fan_rpm,Tw_in,Tw_out,T3_condenser,T4_buiten,' +\n          'Tp_discharge,Th_suction,T1_uitvoer,T5_tapwater,P1_hogedruk_kPa,P2_lagedruk_kPa,' +\n          'odu_stroom_A,odu_spanning_V,Tbt1_buffer_top,Tbt2_buffer_bot,comp_uren,foutcode\\n';\n    flow.set('sensor_hdr', true);\n}\nout += [\n    d.timestamp, d.comp_hz, d.bedrijfsmodus, d.fan_rpm,\n    d.Tw_in, d.Tw_out, d.T3_condenser, d.T4_buiten,\n    d.Tp_discharge, d.Th_suction, d.T1_uitvoer, d.T5_tapwater,\n    d.P1_hogedruk_kPa, d.P2_lagedruk_kPa,\n    d.odu_stroom_A, d.odu_spanning_V,\n    d.Tbt1_buffer_top, d.Tbt2_buffer_bot,\n    d.comp_uren, d.foutcode\n].join(',') + '\\n';\nmsg.payload = out;\nmsg.filename = '/home/student/modbus/amh6dc_sensors.csv';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 1030,
+        "y": 240,
+        "wires": [
+            [
+                "d0b50707e4121786"
+            ]
+        ]
+    },
+    {
+        "id": "d0b50707e4121786",
+        "type": "file",
+        "z": "e1308859a44f2503",
+        "name": "/home/student/modbus/amh6dc_sensors.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 1320,
+        "y": 240,
+        "wires": [[]]
+    },
+    {
+        "id": "9c7ea23245e6dd85",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Formatteer CSV",
+        "func": "var d = msg.payload;\nvar written = flow.get('ctrl_hdr') || false;\nvar out = '';\nif (!written) {\n    out = 'timestamp,zone1_aan,dhw_aan,zone2_aan,eco_modus,stille_modus,modus,setpoint_T1,setpoint_T5,reg0_raw\\n';\n    flow.set('ctrl_hdr', true);\n}\nout += [\n    d.timestamp, d.zone1_aan, d.dhw_aan, d.zone2_aan,\n    d.eco_modus, d.stille_modus, d.modus,\n    d.setpoint_T1, d.setpoint_T5, d.reg0_raw\n].join(',') + '\\n';\nmsg.payload = out;\nmsg.filename = '/home/student/modbus/amh6dc_controls.csv';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 1030,
+        "y": 300,
+        "wires": [
+            [
+                "dba0669fed6b5dab"
+            ]
+        ]
+    },
+    {
+        "id": "dba0669fed6b5dab",
+        "type": "file",
+        "z": "e1308859a44f2503",
+        "name": "/home/student/modbus/amh6dc_controls.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 1320,
+        "y": 300,
+        "wires": [[]]
+    },
+    {
+        "id": "fbeb4e768f1590a4",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Formatteer CSV",
+        "func": "var d = msg.payload;\nvar written = flow.get('energy_hdr') || false;\nvar out = '';\nif (!written) {\n    out = 'timestamp,verwarm_vermogen_kW,hernieuw_vermogen_kW,elek_verbruik_kW,COP_actueel,koel_vermogen_kW,EER_actueel\\n';\n    flow.set('energy_hdr', true);\n}\nout += [\n    d.timestamp,\n    d.verwarm_vermogen_kW,\n    d.hernieuw_vermogen_kW,\n    d.elek_verbruik_kW,\n    d.COP_actueel,\n    d.koel_vermogen_kW,\n    d.EER_actueel\n].join(',') + '\\n';\nmsg.payload = out;\nmsg.filename = '/home/student/modbus/amh6dc_energy.csv';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 1030,
+        "y": 360,
+        "wires": [
+            [
+                "c78d7191cb04924c"
+            ]
+        ]
+    },
+    {
+        "id": "c78d7191cb04924c",
+        "type": "file",
+        "z": "e1308859a44f2503",
+        "name": "/home/student/modbus/amh6dc_energy.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 1320,
+        "y": 360,
+        "wires": [[]]
+    },
+    {
+        "id": "de2f57d1b6b0d81b",
+        "type": "comment",
+        "z": "e1308859a44f2503",
+        "name": "── SECTIE 2: AANSTURING ─────────────────────────────────────────────────────────────────────────────",
+        "info": "",
+        "x": 610,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "78e9b531b8bf7f05",
+        "type": "inject",
+        "z": "e1308859a44f2503",
+        "name": "▶ Efficient (45°C)",
+        "repeat": "",
+        "once": false,
+        "topic": "SETPOINT_45C",
+        "payload": "45",
+        "payloadType": "num",
+        "x": 210,
+        "y": 460,
+        "wires": [["dd4a92b176fdcee0"]]
+    },
+    {
+        "id": "bf2e2ed749af86b8",
+        "type": "inject",
+        "z": "e1308859a44f2503",
+        "name": "▶ Mid Power (65°C)",
+        "repeat": "",
+        "once": false,
+        "topic": "SETPOINT_65C",
+        "payload": "65",
+        "payloadType": "num",
+        "x": 210,
+        "y": 500,
+        "wires": [["dd4a92b176fdcee0"]]
+    },
+    {
+        "id": "3fd299f3d916b661",
+        "type": "inject",
+        "z": "e1308859a44f2503",
+        "name": "▶ Hoog Vermogen (72°C)",
+        "repeat": "",
+        "once": false,
+        "topic": "SETPOINT_72C",
+        "payload": "72",
+        "payloadType": "num",
+        "x": 210,
+        "y": 540,
+        "wires": [["dd4a92b176fdcee0"]]
+    },
+    {
+        "id": "8f8a0f67fc0f7403",
+        "type": "inject",
+        "z": "e1308859a44f2503",
+        "name": "▶ HP Zone1 AAN",
+        "repeat": "",
+        "once": false,
+        "topic": "HP_AAN",
+        "payload": "1",
+        "payloadType": "num",
+        "x": 210,
+        "y": 600,
+        "wires": [["a4a28a3501720985"]]
+    },
+    {
+        "id": "bea032d9969f7126",
+        "type": "inject",
+        "z": "e1308859a44f2503",
+        "name": "▶ HP Zone1 UIT",
+        "repeat": "",
+        "once": false,
+        "topic": "HP_UIT",
+        "payload": "0",
+        "payloadType": "num",
+        "x": 210,
+        "y": 640,
+        "wires": [["a4a28a3501720985"]]
+    },
+    {
+        "id": "dd4a92b176fdcee0",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Bouw Setpoint Bericht",
+        "func": "// Register 2 = T1s setpoint Zone 1\n// Midea 120L: direct degrees C, no x10 scaling for this register\nvar val = Number(msg.payload);\n\nif (isNaN(val) || val < 20 || val > 75) {\n    node.error('Setpoint buiten bereik: ' + val + ' (verwacht 20-75 °C)', msg);\n    return null;\n}\n\nnode.log('Setpoint opdracht: ' + val + 'C → register 2');\n\nmsg.payload = {\n    value:   [val],\n    unitid:  1,\n    fc:      6,      // FC6 = Write Single Register\n    address: 2       // Reg 2 = T1s Zone 1 setpoint\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 470,
+        "y": 500,
+        "wires": [
+            [
+                "0716781ebbf972d4",
+                "38147dbc92a8173a"
+            ]
+        ]
+    },
+    {
+        "id": "e7ec259c243e0407",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Bouw Aan/Uit (Read-Modify-Write)",
+        "func": "// Register 0 is a 16-bit BIT FIELD - never overwrite blindly!\n// BIT1 = Zone 1 water flow temperature control on/off\n//\n// Strategy: READ current reg0, SET or CLEAR bit 1, WRITE back\n// This preserves ECO mode (BIT5), Silent mode (BIT8), etc.\n//\n// msg.topic is preserved from inject via keepMsgProperties:true on the getter\n\nvar currentReg0 = msg.payload[0];  // Read result from Lees Reg 0\nvar topic = msg.topic || '';\nvar turnOn = (topic === 'HP_AAN');\n\nvar newReg0;\nif (turnOn) {\n    newReg0 = currentReg0 | 0x0002;   // SET BIT1\n    node.log('Zone1 AAN: reg0 ' + currentReg0 + ' → ' + newReg0 + ' (BIT1 set)');\n} else {\n    newReg0 = currentReg0 & ~0x0002;  // CLEAR BIT1\n    newReg0 = newReg0 & 0xFFFF;       // Ensure 16-bit unsigned\n    node.log('Zone1 UIT: reg0 ' + currentReg0 + ' → ' + newReg0 + ' (BIT1 cleared)');\n}\n\nmsg.payload = {\n    value:   [newReg0],\n    unitid:  1,\n    fc:      6,       // FC6 = Write Single Register\n    address: 0        // Reg 0 = Power on/off BIT field\n};\nmsg.topic = turnOn ? 'HP_AAN' : 'HP_UIT';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 520,
+        "y": 640,
+        "wires": [
+            [
+                "0716781ebbf972d4",
+                "38147dbc92a8173a"
+            ]
+        ]
+    },
+    {
+        "id": "57ce2a9391e039e5",
+        "type": "delay",
+        "z": "e1308859a44f2503",
+        "name": "Wacht 500ms",
+        "pauseType": "delay",
+        "timeout": "500",
+        "timeoutUnits": "milliseconds",
+        "rate": "1",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 950,
+        "y": 620,
+        "wires": [["0067f500f0f36839"]]
+    },
+    {
+        "id": "9f21654b100f86a2",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Verificeer Schrijfactie",
+        "func": "var r = msg.payload;\nvar reg0 = r[0];\nvar modeMap = {1: 'Auto', 2: 'Koelen', 3: 'Verwarmen'};\n\nvar result = {\n    timestamp:      new Date().toISOString(),\n    type:           'VERIFICATIE',\n    reg0_raw:       reg0,\n    zone1_aan:      (reg0 & 0x0002) ? 'AAN' : 'UIT',\n    dhw_aan:        (reg0 & 0x0004) ? 'AAN' : 'UIT',\n    eco_modus:      (reg0 & 0x0020) ? 'Actief' : 'Uit',\n    stille_modus:   (reg0 & 0x0100) ? 'Actief' : 'Uit',\n    modus:          modeMap[r[1]] || 'Onbekend',\n    setpoint_T1:    r[2] + 'C'\n};\n\nmsg.payload = result;\nmsg.topic = 'VERIFICATIE';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 1170,
+        "y": 620,
+        "wires": [
+            [
+                "f15f621beeeca173",
+                "0716781ebbf972d4"
+            ]
+        ]
+    },
+    {
+        "id": "f15f621beeeca173",
+        "type": "debug",
+        "z": "e1308859a44f2503",
+        "name": "✓ Schrijf Verificatie",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 1390,
+        "y": 620,
+        "wires": []
+    },
+    {
+        "id": "0716781ebbf972d4",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Formatteer Command Log",
+        "func": "var d = msg.payload;\nvar topic = msg.topic || 'onbekend';\nvar written = flow.get('cmd_hdr') || false;\nvar out = '';\n\nif (!written) {\n    out = 'timestamp,type,detail\\n';\n    flow.set('cmd_hdr', true);\n}\n\nvar detail;\nif (d && d.type === 'VERIFICATIE') {\n    detail = 'zone1=' + d.zone1_aan +\n             ' modus=' + d.modus +\n             ' setpoint=' + d.setpoint_T1 +\n             ' reg0=0x' + d.reg0_raw.toString(16).toUpperCase();\n} else if (d && Array.isArray(d.value)) {\n    detail = 'reg=' + d.address +\n             ' waarde=' + d.value[0] +\n             ' (0x' + d.value[0].toString(16).toUpperCase() + ')' +\n             ' fc=' + d.fc;\n} else {\n    detail = JSON.stringify(d);\n}\n\nout += [new Date().toISOString(), topic, '\"' + detail + '\"'].join(',') + '\\n';\nmsg.payload = out;\nmsg.filename = '/home/student/modbus/amh6dc_commands.csv';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 950,
+        "y": 680,
+        "wires": [["040251c4e31e0fc9"]]
+    },
+    {
+        "id": "040251c4e31e0fc9",
+        "type": "file",
+        "z": "e1308859a44f2503",
+        "name": "/home/student/modbus/amh6dc_commands.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 1240,
+        "y": 680,
+        "wires": [[]]
+    },
+    {
+        "id": "349b42f3c394e8da",
+        "type": "comment",
+        "z": "e1308859a44f2503",
+        "name": "── SECTIE 3: FOUTAFHANDELING ────────────────────────────────────────────────────────────────────────",
+        "info": "",
+        "x": 600,
+        "y": 760,
+        "wires": []
+    },
+    {
+        "id": "3b0e446872c82ab3",
+        "type": "catch",
+        "z": "e1308859a44f2503",
+        "name": "Catch Alle Fouten",
+        "scope": null,
+        "uncaught": false,
+        "x": 390,
+        "y": 820,
+        "wires": [["a6806d0fb094a824"]]
+    },
+    {
+        "id": "a6806d0fb094a824",
+        "type": "function",
+        "z": "e1308859a44f2503",
+        "name": "Fout Handler & Formatteer",
+        "func": "// Midea error code lookup table (from document error code table 1)\nvar errorCodes = {\n    1:'E0 Water flow fault',\n    3:'E2 Communication fault controller/hydraulic',\n    4:'E3 Final outlet water temp sensor T1 fault',\n    5:'E4 Water tank temp sensor T5 fault',\n    6:'E5 Condenser outlet refrigerant temp sensor T3 fault',\n    7:'E6 Ambient temp sensor T4 fault',\n    8:'E7 Buffer tank top sensor Tbt1 fault',\n    9:'E8 Water flow failure',\n    10:'E9 Suction temp sensor Th fault',\n    11:'EA Discharge temp sensor Tp fault',\n    13:'Ec Buffer tank low sensor Tbt2 fault',\n    14:'Ed Inlet water temp sensor Tw_in fault',\n    20:'P0 Low pressure switch protection',\n    21:'P1 High pressure switch protection',\n    23:'P3 Compressor overcurrent',\n    24:'P4 High discharge temp protection',\n    25:'P5 dT water too big',\n    26:'P6 Inverter module protection',\n    31:'Pb Anti-freeze mode',\n    38:'PP Tw_out-Tw_in unusual',\n    39:'H0 Main board communication fault',\n    41:'H2 Refrigerant liquid temp sensor T2 fault',\n    45:'H6 DC fan motor fault',\n    46:'H7 Voltage protection',\n    57:'HP Low pressure protection'\n};\n\nvar errMsg = '';\nif (msg.error && msg.error.message) {\n    errMsg = msg.error.message;\n} else if (typeof msg.payload === 'string') {\n    errMsg = msg.payload;\n} else if (msg.payload && msg.payload.err) {\n    errMsg = msg.payload.err;\n} else {\n    errMsg = JSON.stringify(msg.payload || 'onbekend');\n}\n\n// Enrich with Midea error description if active\nvar sensorData = flow.get('sensor_data');\nif (sensorData && sensorData.foutcode > 0) {\n    var code = sensorData.foutcode;\n    var desc = errorCodes[code] || 'Foutcode ' + code;\n    errMsg = errMsg + ' | HP fout: ' + desc;\n}\n\nvar source = msg.topic || msg._alias || 'modbus';\nvar ts = new Date().toISOString();\n\nnode.error('Fout [' + source + ']: ' + errMsg);\n\nvar written = flow.get('err_hdr') || false;\nvar out = '';\nif (!written) {\n    out = 'timestamp,source,fout\\n';\n    flow.set('err_hdr', true);\n}\nout += [ts, source, '\"' + errMsg.replace(/\"/g, \"'\") + '\"'].join(',') + '\\n';\n\nmsg.payload = out;\nmsg.error_detail = errMsg;\nmsg.filename = '/home/student/modbus/amh6dc_errors.csv';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "x": 660,
+        "y": 820,
+        "wires": [
+            [
+                "2c8b090e57410f8e",
+                "22c71c671d8252ca"
+            ]
+        ]
+    },
+    {
+        "id": "2c8b090e57410f8e",
+        "type": "debug",
+        "z": "e1308859a44f2503",
+        "name": "Fouten",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "error_detail",
+        "targetType": "msg",
+        "x": 890,
+        "y": 800,
+        "wires": []
+    },
+    {
+        "id": "22c71c671d8252ca",
+        "type": "file",
+        "z": "e1308859a44f2503",
+        "name": "/home/student/modbus/amh6dc_errors.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 970,
+        "y": 840,
+        "wires": [[]]
+    },
+    {
+        "id": "b7e3438afa5291a1",
+        "type": "modbus-getter",
+        "z": "e1308859a44f2503",
+        "name": "Lees Sensoren Reg 100-127 (28x)",
+        "showStatusActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "logIOActivities": false,
+        "unitid": "1",
+        "dataType": "HoldingRegister",
+        "adr": "100",
+        "quantity": "28",
+        "server": "6043f8f890a5cbb1",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": false,
+        "keepMsgProperties": false,
+        "delayOnStart": false,
+        "enableDeformedMessages": false,
+        "startDelayTime": "",
+        "x": 460,
+        "y": 240,
+        "wires": [
+            ["869c382e96222369"],
+            ["a6806d0fb094a824"]
+        ]
+    },
+    {
+        "id": "158d48929f059054",
+        "type": "modbus-getter",
+        "z": "e1308859a44f2503",
+        "name": "Lees Controls Reg 0-7 (8x)",
+        "showStatusActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "logIOActivities": false,
+        "unitid": "1",
+        "dataType": "HoldingRegister",
+        "adr": "0",
+        "quantity": "8",
+        "server": "6043f8f890a5cbb1",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": false,
+        "keepMsgProperties": false,
+        "delayOnStart": false,
+        "enableDeformedMessages": false,
+        "startDelayTime": "",
+        "x": 460,
+        "y": 300,
+        "wires": [
+            ["ea2b961a69383f8a"],
+            ["a6806d0fb094a824"]
+        ]
+    },
+    {
+        "id": "a09d21d43f1b436f",
+        "type": "modbus-getter",
+        "z": "e1308859a44f2503",
+        "name": "Lees Energie Reg 148-155 (8x)",
+        "showStatusActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "logIOActivities": false,
+        "unitid": "1",
+        "dataType": "HoldingRegister",
+        "adr": "148",
+        "quantity": "8",
+        "server": "6043f8f890a5cbb1",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": false,
+        "keepMsgProperties": false,
+        "delayOnStart": false,
+        "enableDeformedMessages": false,
+        "startDelayTime": "",
+        "x": 460,
+        "y": 360,
+        "wires": [
+            ["21b787c2d2949fbb"],
+            ["a6806d0fb094a824"]
+        ]
+    },
+    {
+        "id": "a4a28a3501720985",
+        "type": "modbus-getter",
+        "z": "e1308859a44f2503",
+        "name": "Lees Reg 0 (voor RMW)",
+        "showStatusActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "logIOActivities": false,
+        "unitid": "1",
+        "dataType": "HoldingRegister",
+        "adr": "0",
+        "quantity": "1",
+        "server": "6043f8f890a5cbb1",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": false,
+        "keepMsgProperties": true,
+        "delayOnStart": false,
+        "enableDeformedMessages": false,
+        "startDelayTime": "",
+        "x": 470,
+        "y": 560,
+        "wires": [
+            ["e7ec259c243e0407"],
+            ["a6806d0fb094a824"]
+        ]
+    },
+    {
+        "id": "0067f500f0f36839",
+        "type": "modbus-getter",
+        "z": "e1308859a44f2503",
+        "name": "Verificatie Lees Reg 0-2",
+        "showStatusActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "logIOActivities": false,
+        "unitid": "1",
+        "dataType": "HoldingRegister",
+        "adr": "0",
+        "quantity": "3",
+        "server": "6043f8f890a5cbb1",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": false,
+        "keepMsgProperties": false,
+        "delayOnStart": false,
+        "enableDeformedMessages": false,
+        "startDelayTime": "",
+        "x": 1170,
+        "y": 540,
+        "wires": [
+            ["9f21654b100f86a2"],
+            ["a6806d0fb094a824"]
+        ]
+    },
+    {
+        "id": "38147dbc92a8173a",
+        "type": "modbus-flex-write",
+        "z": "e1308859a44f2503",
+        "name": "Schrijf naar HP",
+        "showStatusActivities": false,
+        "showErrors": false,
+        "showWarnings": true,
+        "server": "6043f8f890a5cbb1",
+        "emptyMsgOnFail": false,
+        "keepMsgProperties": false,
+        "delayOnStart": false,
+        "startDelayTime": "",
+        "x": 810,
+        "y": 500,
+        "wires": [
+            ["57ce2a9391e039e5"],
+            ["a6806d0fb094a824"]
+        ]
+    },
+    {
+        "id": "6043f8f890a5cbb1",
+        "type": "modbus-client",
+        "name": "AMH6DC RS485",
+        "clienttype": "serial",
+        "bufferCommands": true,
+        "stateLogEnabled": false,
+        "queueLogEnabled": false,
+        "failureLogEnabled": true,
+        "tcpHost": "127.0.0.1",
+        "tcpPort": "502",
+        "tcpType": "DEFAULT",
+        "serialPort": "/dev/ttyUSB0",
+        "serialType": "RTU",
+        "serialBaudrate": "9600",
+        "serialDatabits": "8",
+        "serialStopbits": "1",
+        "serialParity": "none",
+        "serialConnectionDelay": "100",
+        "unit_id": "1",
+        "commandDelay": "100",
+        "reconnectOnTimeout": true,
+        "reconnectTimeout": "2000",
+        "parallelUnitIdsAllowed": false
+    },
+    {
+        "id": "44c05019b59bf883",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-contrib-modbus": "5.45.2"
+        }
+    }
+]
